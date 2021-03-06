@@ -226,9 +226,9 @@ class AutomatedMultiview():
             "look_down_init":habitat_sim.ActionSpec(
                 "look_down", habitat_sim.ActuationSpec(amount=100.0)
             )
-            # "do_nothing": habitat_sim.agent.ActionSpec(
-            #     "look_down", habitat_sim.agent.ActuationSpec(amount=0.)
-            # ),
+            "do_nothing": habitat_sim.agent.ActionSpec(
+                "look_down", habitat_sim.agent.ActuationSpec(amount=0.)
+            ),
         }
         # agent_cfg.action_space = {
         #     "do_nothing": habitat_sim.agent.ActionSpec(
@@ -473,13 +473,13 @@ class AutomatedMultiview():
             #print(obj_center)
             obj_center = np.expand_dims(obj_center, axis=0)
             print("CENTER: ", obj_center)
-        for obj_idx in range(object_centers.shape[0]):
+        # for obj_idx in range(object_centers.shape[0]):
 
             # Calculate distance to object center
-            obj_center = object_centers[0]
+            # obj_center = object_centers[0]
             
             #print(obj_center)
-            obj_center = np.expand_dims(obj_center, axis=0)
+            # obj_center = np.expand_dims(obj_center, axis=0)
 
             print("OBJECT CENTER: ", obj_center)
             print(self.nav_pts.shape)
@@ -492,7 +492,7 @@ class AutomatedMultiview():
                 # continue
 
             # plot valid points that we happen to select
-            self.plot_navigable_points(valid_pts)
+            # self.plot_navigable_points(valid_pts)
 
             # Bin points based on angles [vertical_angle (10 deg/bin), horizontal_angle (10 deg/bin)]
             valid_pts_shift = valid_pts - obj_center
@@ -560,6 +560,8 @@ class AutomatedMultiview():
                     pos_s = valid_pts[s_ind]
                     valid_pts_selected.append(pos_s)
                     pos_s = pos_s + np.array([0, 1.5, 0])
+                    # get valid point closest
+                    pos_s = valid_pts[np.argmin(np.linalg.norm(valid_pts[:,[True, False, True]] - pos_s[[True, False, True]], axis=1))]
                     if np.all(agent_state.position==np.zeros(3)):
                         agent_state.position = pos_s
                         self.agent.set_state(agent_state)
@@ -573,7 +575,7 @@ class AutomatedMultiview():
 
                     
                     #### Execute actions from path_finder #########
-
+                    agent_state = self.agent.get_state()
                     print("BEFORE", agent_state.position)
                     print("ROT", agent_state.rotation)
                     actions_path = self.path_finder.find_path(pos_s)
@@ -586,6 +588,13 @@ class AutomatedMultiview():
                     print("ROT", agent_state.rotation)
                     print(self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount)
 
+                    agent_state.position = pos_s
+                    self.agent.set_state(agent_state)
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                    self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
+
                     ##############################################
 
 
@@ -597,6 +606,7 @@ class AutomatedMultiview():
 
 
                     # YAW calculation - rotate to object
+                    agent_state = self.agent.get_state()
                     agent_to_obj = np.squeeze(obj_center) - agent_state.position
                     agent_local_forward = np.array([0, 0, -1.0]) # y, z, x
                     flat_to_obj = np.array([agent_to_obj[0], 0.0, agent_to_obj[2]])
