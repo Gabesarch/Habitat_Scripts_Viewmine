@@ -209,7 +209,7 @@ class AutomatedMultiview():
         agent_cfg.sensor_specifications = sensor_specs
         agent_cfg.action_space = {
             "move_forward": habitat_sim.agent.ActionSpec(
-                "move_forward", habitat_sim.agent.ActuationSpec(amount=0.25)
+                "move_forward", habitat_sim.agent.ActuationSpec(amount=0.1)
             ),
             "turn_left": habitat_sim.agent.ActionSpec(
                 "turn_left", habitat_sim.agent.ActuationSpec(amount=30.0)
@@ -217,6 +217,15 @@ class AutomatedMultiview():
             "turn_right": habitat_sim.agent.ActionSpec(
                 "turn_right", habitat_sim.agent.ActuationSpec(amount=30.0)
             ),
+            "look_up":habitat_sim.ActionSpec(
+                "look_up", habitat_sim.ActuationSpec(amount=self.rot_interval)
+            ),
+            "look_down":habitat_sim.ActionSpec(
+                "look_down", habitat_sim.ActuationSpec(amount=self.rot_interval)
+            ),
+            "look_down_init":habitat_sim.ActionSpec(
+                "look_down", habitat_sim.ActuationSpec(amount=100.0)
+            )
             # "do_nothing": habitat_sim.agent.ActionSpec(
             #     "look_down", habitat_sim.agent.ActuationSpec(amount=0.)
             # ),
@@ -453,6 +462,8 @@ class AutomatedMultiview():
         print("DJSD")
         print(object_centers)
         print(object_centers.shape)
+        agent_state = habitat_sim.AgentState()
+        self.agent.set_state(agent_state)
         scene = self.sim.semantic_scene
         objects = scene.objects
         for obj in objects:
@@ -498,13 +509,13 @@ class AutomatedMultiview():
             valid_pitch = np.degrees(np.arctan2(dy,dxdz_norm))
 
             # binning yaw around object
-            nbins = 18
+            nbins = 10
             bins = np.linspace(-180, 180, nbins+1)
             bin_yaw = np.digitize(valid_yaw, bins)
 
             num_valid_bins = np.unique(bin_yaw).size
 
-            spawns_per_bin = int(self.num_views / num_valid_bins) + 2
+            spawns_per_bin = 2 #int(self.num_views / num_valid_bins) + 2
             print(f'spawns_per_bin: {spawns_per_bin}')
 
             if self.visualize:
@@ -534,29 +545,55 @@ class AutomatedMultiview():
                 # get all angle indices in the current bin range
                 # st()
                 inds_bin_cur = np.where(bin_yaw==(b+1)) # bins start 1 so need +1
-                if inds_bin_cur[0].size == 0:
-                    print("NO BINS")
+                inds_bin_cur = list(inds_bin_cur[0])
+                if len(inds_bin_cur) == 0:
                     continue
 
                 for s in range(spawns_per_bin):
                     # st()
-                    s_ind = np.random.choice(inds_bin_cur[0])
-                    #s_ind = inds_bin_cur[0][0]
+                    if len(inds_bin_cur) == 0:
+                        continue
+                    
+                    rand_ind = np.random.randint(0, len(inds_bin_cur))
+                    s_ind = inds_bin_cur.pop(rand_ind)
+
                     pos_s = valid_pts[s_ind]
                     valid_pts_selected.append(pos_s)
+                    pos_s = pos_s + np.array([0, 1.5, 0])
+                    if np.all(agent_state.position==np.zeros(3)):
+                        agent_state.position = pos_s
+                        self.agent.set_state(agent_state)
+
+                    # agent_state = habitat_sim.AgentState()
+                    # self.agent.set_state(agent_state)
+                    # val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    # self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                    # self.sim.step(action)
+                    # self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
 
                     
                     #### Execute actions from path_finder #########
 
-                    self.path_finder()
-
-
+                    print("BEFORE", agent_state.position)
+                    print("ROT", agent_state.rotation)
+                    actions_path = self.path_finder.find_path(pos_s)
+                    for action_path in actions_path:
+                        if action_path is None:
+                            continue
+                        self.sim.step(action_path)
+                    agent_state = self.agent.get_state()
+                    print("AFTER", agent_state.position)
+                    print("ROT", agent_state.rotation)
+                    print(self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount)
 
                     ##############################################
 
 
                     # agent_state = habitat_sim.AgentState()
                     # agent_state.position = pos_s + np.array([0, 1.5, 0])
+
+                    # agent_state = habitat_sim.AgentState()
+                    # self.agent.set_state(agent_state)
 
 
                     # YAW calculation - rotate to object
@@ -571,7 +608,10 @@ class AutomatedMultiview():
                     quat_yaw = quat_from_angle_axis(turn_angle, np.array([0, 1.0, 0]))
 
                     # Set agent yaw rotation to look at object
+                    agent_state = self.agent.get_state()
                     agent_state.rotation = quat_yaw
+                    self.agent.set_state(agent_state)
+                    print("ROT", agent_state.rotation)
                     
                     # change sensor state to default 
                     # need to move the sensors too
@@ -589,8 +629,13 @@ class AutomatedMultiview():
                     movement = "look_up" if turn_pitch>0 else "look_down"
 
                     # initiate agent
-                    self.agent.set_state(agent_state)
+                    # self.agent.set_state(agent_state)
+                    # agent_state = habitat_sim.AgentState()
+                    # self.agent.set_state(agent_state)
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
                     self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
 
                     # Rotate "head" of agent up or down based on calculated pitch angle to object to center it in view
                     if num_turns == 0:
@@ -604,7 +649,11 @@ class AutomatedMultiview():
                                     print(self.agent.state.sensor_states[sensor].rotation)
                     
                     # get observations after centiering
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
                     observations = self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
+                    print("ROT", agent_state.rotation)
                     
                     # Assuming all sensors have same rotation and position
                     observations["rotations"] = self.agent.state.sensor_states['color_sensor'].rotation #agent_state.rotation
@@ -615,7 +664,11 @@ class AutomatedMultiview():
                         im = Image.fromarray(im, mode="RGBA")
                         im = cv2.cvtColor(np.asarray(im), cv2.COLOR_RGB2BGR)
                         plt.imshow(im)
-                        plt.show()
+                        # plt.show()
+                        plt.savefig(f'images/test{s}_{b}.png')
+
+                    agent_state = self.agent.get_state()
+                    print("AFTER", agent_state.position)
 
                     cnt +=1
                         
@@ -655,8 +708,8 @@ class AutomatedMultiview():
             if obj == None or obj.category == None or obj.category.name() not in self.include_classes:
                 continue
             # st()
-            if self.verbose:
-                print(f"Object name is: {obj.category.name()}")
+            # if self.verbose:
+            print(f"Object name is: {obj.category.name()}")
             # Calculate distance to object center
             obj_center = obj.obb.to_aabb().center
             #print(obj_center)
@@ -683,7 +736,7 @@ class AutomatedMultiview():
             valid_pitch = np.degrees(np.arctan2(dy,dxdz_norm))
 
             # binning yaw around object
-            nbins = 18
+            nbins = 7
             bins = np.linspace(-180, 180, nbins+1)
             bin_yaw = np.digitize(valid_yaw, bins)
 
@@ -739,30 +792,36 @@ class AutomatedMultiview():
                     # print("PRINT", self.agent.state.sensor_states[sensor].rotation)
 
 
-                # # NOTE: for finding an object, i dont think we'd want to center it
-                # # Calculate Pitch from head to object
-                # turn_pitch = np.degrees(math.atan2(agent_to_obj[1], flat_dist_to_obj))
-                # num_turns = np.abs(np.floor(turn_pitch/self.rot_interval)).astype(int) # compute number of times to move head up or down by rot_interval
-                # print("MOVING HEAD ", num_turns, " TIMES")
-                # movement = "look_up" if turn_pitch>0 else "look_down"
+                # NOTE: for finding an object, i dont think we'd want to center it
+                # Calculate Pitch from head to object
+                turn_pitch = np.degrees(math.atan2(agent_to_obj[1], flat_dist_to_obj))
+                num_turns = np.abs(np.floor(turn_pitch/self.rot_interval)).astype(int) # compute number of times to move head up or down by rot_interval
+                print("MOVING HEAD ", num_turns, " TIMES")
+                movement = "look_up" if turn_pitch>0 else "look_down"
 
-                # # initiate agent
-                # self.agent.set_state(agent_state)
-                # self.sim.step(action)
+                # initiate agent
+                val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                self.agent.set_state(agent_state)
+                self.sim.step(action)
+                self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
 
-                # # Rotate "head" of agent up or down based on calculated pitch angle to object to center it in view
-                # if num_turns == 0:
-                #     pass
-                # else: 
-                #     for turn in range(num_turns):
-                #         # st()
-                #         self.sim.step(movement)
-                #         if self.verbose:
-                #             for sensor in self.agent.state.sensor_states:
-                #                 print(self.agent.state.sensor_states[sensor].rotation)
+                # Rotate "head" of agent up or down based on calculated pitch angle to object to center it in view
+                if num_turns == 0:
+                    pass
+                else: 
+                    for turn in range(num_turns):
+                        # st()
+                        self.sim.step(movement)
+                        if self.verbose:
+                            for sensor in self.agent.state.sensor_states:
+                                print(self.agent.state.sensor_states[sensor].rotation)
                 
                 # get observations after centiering
+                val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
                 observations = self.sim.step(action)
+                self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
 
                 ####### %%%%%%%%%%%%%%%%%%%%%%% ######### MASK RCNN
 
@@ -780,8 +839,10 @@ class AutomatedMultiview():
                 seg_im = out.get_image()
 
                 if False:
+                    plt.figure(1)
+                    plt.clf()
                     plt.imshow(im)
-                    plt.show()
+                    plt.savefig('images/test.png')
 
                 pred_masks = outputs['instances'].pred_masks
                 pred_boxes = outputs['instances'].pred_boxes.tensor
@@ -830,6 +891,13 @@ class AutomatedMultiview():
                     # randomly choose a high confidence object
                     # instead of this I think we should iterate over ALL the high confident objects and fixate on them
                     obj_mask_focus = random.choice(obj_masks)
+
+                    # if True:
+                    #     plt.figure(1)
+                    #     plt.clf()
+                    #     plt.imshow(obj_mask_focus)
+                    #     plt.savefig('images/test.png')
+                    # st()
 
                     depth = observations["depth_sensor"]
 
