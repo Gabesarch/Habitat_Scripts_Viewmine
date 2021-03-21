@@ -25,7 +25,11 @@ from detectron2.utils.visualizer import Visualizer
 from detectron2.data import MetadataCatalog, DatasetCatalog
 
 from greedy_geodesic_follower import GreedyGeodesicFollower
-# from env.habitat.utils.noisy_actions import CustomActionSpaceConfiguration
+from noise_models.noisy_actions import CustomActionSpaceConfiguration
+import sys
+sys.path.append("Neural_SLAM")
+
+# from Neural_SLAM.env import make_vec_envs
 # from habitat_sim.simulator import make_greedy_follower
 import habitat_sim.simulator
 from habitat_sim.nav import (  # type: ignore
@@ -35,8 +39,6 @@ from habitat_sim.nav import (  # type: ignore
 )
 import sys
 sys.path.append("..")
-
-from scipy.ndimage.morphology import binary_fill_holes
 
 from habitat.utils.visualizations import maps
 import torch
@@ -63,25 +65,27 @@ class AutomatedMultiview():
         self.gen_maps = True
         # st()
         self.mapnames = os.listdir('/home/nel/gsarch/Replica-Dataset/out/')
+        self.mapnames = self.mapnames
         # self.mapnames = os.listdir('/hdd/replica/Replica-Dataset/out/')
         # self.mapnames = ['room_1']
         self.num_episodes = len(self.mapnames)
         # self.num_episodes = 1 # temporary
-        self.ignore_classes = ['book','base-cabinet','beam','blanket','blinds','cloth','clothing','coaster','comforter','curtain','ceiling','countertop','floor','handrail','mat','paper-towel','picture','pillar','pipe','scarf','shower-stall','switch','tissue-paper','towel','vent','wall','wall-plug','window','rug','logo','set-of-clothing']
+        #self.ignore_classes = ['book','base-cabinet','beam','blanket','blinds','cloth','clothing','coaster','comforter','curtain','ceiling','countertop','floor','handrail','mat','paper-towel','picture','pillar','pipe','scarf','shower-stall','switch','tissue-paper','towel','vent','wall','wall-plug','window','rug','logo','set-of-clothing']
         self.include_classes = ['chair', 'bed', 'toilet', 'sofa', 'indoor-plant', 'refrigerator', 'tv-screen', 'table']
         self.small_classes = ['indoor-plant', 'toilet']
-        self.rot_interval = 5.0
-        self.radius_max = 2.2 #3
-        self.radius_min = 2.1 #1
+        self.rot_interval = 10.0 #5.0
+        self.translate_interval = 0.25
+        self.radius_max = 1.5 #3
+        self.radius_min = 1.1 #1
         self.num_flat_views = 3
         self.num_any_views = 7
         self.num_views = 20
 
-        self.num_objects_per_episode = 3 #30 #30
+        self.num_objects_per_episode = 3 #25 #30
         # Initialize maskRCNN
         cfg_det = get_cfg()
         cfg_det.merge_from_file(model_zoo.get_config_file("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"))
-        cfg_det.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.2 #0.5  # set threshold for this model
+        cfg_det.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.5  # set threshold for this model
         cfg_det.MODEL.WEIGHTS = model_zoo.get_checkpoint_url("COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
         cfg_det.MODEL.DEVICE='cpu'
         self.cfg_det = cfg_det
@@ -214,12 +218,13 @@ class AutomatedMultiview():
 
                 sensor_specs.append(sensor_spec)
 
+        
+
         # Here you can specify the amount of displacement in a forward action and the turn angle
         agent_cfg = habitat_sim.agent.AgentConfiguration()
-        agent_cfg.sensor_specifications = sensor_specs
         agent_cfg.action_space = {
             "move_forward": habitat_sim.agent.ActionSpec(
-                "move_forward", habitat_sim.agent.ActuationSpec(amount=0.1)
+                "move_forward", habitat_sim.agent.ActuationSpec(amount=self.translate_interval)
             ),
             "turn_left": habitat_sim.agent.ActionSpec(
                 "turn_left", habitat_sim.agent.ActuationSpec(amount=self.rot_interval)
@@ -239,14 +244,103 @@ class AutomatedMultiview():
             "do_nothing": habitat_sim.agent.ActionSpec(
                 "look_down", habitat_sim.agent.ActuationSpec(amount=0.)
             ),
+            # "pyrobot_noisy_forward": habitat_sim.ActionSpec(
+            #     "pyrobot_noisy_move_forward",
+            #     habitat_sim.PyRobotNoisyActuationSpec(
+            #         amount=self.translate_interval,
+            #         # robot=self.config.NOISE_MODEL.ROBOT,
+            #         # controller=self.config.NOISE_MODEL.CONTROLLER,
+            #         # noise_multiplier=self.config.NOISE_MODEL.NOISE_MULTIPLIER,
+            #     ),
+            # ),
+            # "pyrobot_noisy_left": habitat_sim.ActionSpec(
+            #     "pyrobot_noisy_turn_left",
+            #     habitat_sim.PyRobotNoisyActuationSpec(
+            #         amount=self.rot_interval,
+            #         # robot=self.config.NOISE_MODEL.ROBOT,
+            #         # controller=self.config.NOISE_MODEL.CONTROLLER,
+            #         # noise_multiplier=self.config.NOISE_MODEL.NOISE_MULTIPLIER,
+            #     ),
+            # ),
+            # "pyrobot_noisy_right": habitat_sim.ActionSpec(
+            #     "pyrobot_noisy_turn_right",
+            #     habitat_sim.PyRobotNoisyActuationSpec(
+            #         amount=self.rot_interval,
+            #         # robot=self.config.NOISE_MODEL.ROBOT,
+            #         # controller=self.config.NOISE_MODEL.CONTROLLER,
+            #         # noise_multiplier=self.config.NOISE_MODEL.NOISE_MULTIPLIER,
+            #     )
+            # )
+            # "noisy_forward": habitat_sim.agent.ActionSpec(
+            #     "noisy_forward", habitat_sim.agent.ActuationSpec(amount=0.)
+            # ),
+            # "noisy_right": habitat_sim.agent.ActionSpec(
+            #     "noisy_right", habitat_sim.agent.ActuationSpec(amount=self.rot_interval)
+            # ),
+            # "noisy_left": habitat_sim.agent.ActionSpec(
+            #     "noisy_left", habitat_sim.agent.ActuationSpec(amount=self.rot_interval)
+            # ),            
         }
+        config = get_config()
+        config.defrost()
+        config.SIMULATOR.FORWARD_STEP_SIZE = 0.25
+        config.SIMULATOR.TURN_ANGLE = 10
+        config.freeze()
 
+        # get noisy sensors
+        custom_actions = CustomActionSpaceConfiguration(config.SIMULATOR)
+        custom_config = custom_actions.get(agent_cfg)
+        agent_cfg.sensor_specifications = sensor_specs
+        
+        # agent_cfg.action_space = {
+        #     "move_forward": habitat_sim.agent.ActionSpec(
+        #         "move_forward", habitat_sim.agent.ActuationSpec(amount=0.1)
+        #     ),
+        #     "turn_left": habitat_sim.agent.ActionSpec(
+        #         "turn_left", habitat_sim.agent.ActuationSpec(amount=self.rot_interval)
+        #     ),
+        #     "turn_right": habitat_sim.agent.ActionSpec(
+        #         "turn_right", habitat_sim.agent.ActuationSpec(amount=self.rot_interval)
+        #     ),
+        #     "look_up":habitat_sim.ActionSpec(
+        #         "look_up", habitat_sim.ActuationSpec(amount=self.rot_interval)
+        #     ),
+        #     "look_down":habitat_sim.ActionSpec(
+        #         "look_down", habitat_sim.ActuationSpec(amount=self.rot_interval)
+        #     ),
+        #     "look_down_init":habitat_sim.ActionSpec(
+        #         "look_down", habitat_sim.ActuationSpec(amount=100.0)
+        #     ),
+        #     "do_nothing": habitat_sim.agent.ActionSpec(
+        #         "look_down", habitat_sim.agent.ActuationSpec(amount=0.)
+        #     ),
+        # }
         # self.sensor_noise_fwd = \
         #         pickle.load(open("noise_models/sensor_noise_fwd.pkl", 'rb'))
         # self.sensor_noise_right = \
         #         pickle.load(open("noise_models/sensor_noise_right.pkl", 'rb'))
         # self.sensor_noise_left = \
         #         pickle.load(open("noise_models/sensor_noise_left.pkl", 'rb'))
+
+        # HabitatSimActionsSingleton = habitat.sims.habitat_simulator.actions.HabitatSimActionsSingleton()
+
+        # HabitatSimActionsSingleton.extend_action_space("NOISY_FORWARD")
+        # HabitatSimActionsSingleton.extend_action_space("NOISY_RIGHT")
+        # HabitatSimActionsSingleton.extend_action_space("NOISY_LEFT")
+
+        # config = get_config()
+        # config.defrost()
+        # config.SIMULATOR.ACTION_SPACE_CONFIG = \
+        #         "CustomActionSpaceConfiguration"
+        # config.freeze()
+
+
+        self.sensor_noise_fwd = \
+                pickle.load(open("noise_models/sensor_noise_fwd.pkl", 'rb'))
+        self.sensor_noise_right = \
+                pickle.load(open("noise_models/sensor_noise_right.pkl", 'rb'))
+        self.sensor_noise_left = \
+                pickle.load(open("noise_models/sensor_noise_left.pkl", 'rb'))
 
         # habitat.SimulatorActions.extend_action_space("NOISY_FORWARD")
         # habitat.SimulatorActions.extend_action_space("NOISY_RIGHT")
@@ -397,6 +491,7 @@ class AutomatedMultiview():
                 y, x = np.where(mask)
                 pred_box = np.array([min(y), min(x), max(y), max(x)]) # ymin, xmin, ymax, xmax
                 # print("Object name {}, Object category id {}, Object instance id {}".format(class_name, obj_instance['id'], obj_instance['class_id']))
+                # st()
                 obj_data = {'instance_id': obj_id, 'category_id': obj_instance.category.index(), 'category_name': obj_instance.category.name(),
                                  'bbox_center': obj_instance.obb.center, 'bbox_size': obj_instance.obb.sizes,
                                   'world_T_local': obj_instance.obb.local_to_world, 'mask_2d': mask, 'box_2d': pred_box}
@@ -517,7 +612,7 @@ class AutomatedMultiview():
 
 
     # display a topdown map with matplotlib
-    def display_map(self, topdown_map, tag, key_points=None, obs_points=None, obj_center=None, obj_points=None, objs_point_boxes=None):
+    def display_map(self, topdown_map, tag, key_points=None, obs_points=None, obj_center=None, key_points_optimal=None, obs_points_optimal=None):
         plt.figure(figsize=(12, 8))
         ax = plt.subplot(1, 1, 1)
         ax.axis("off")
@@ -526,14 +621,15 @@ class AutomatedMultiview():
         if obs_points is not None:
             for point in obs_points:
                 plt.plot(point[0], point[1], marker="o", markersize=10, alpha=0.8, color='blue')
-        if objs_point_boxes is not None:
-            for points in objs_point_boxes:
-                points_np = np.array(points)
-                plt.scatter(points_np[:,0], points_np[:,1], marker="o", linewidths=4, alpha=0.8, color='lightgrey')
+        if obs_points_optimal is not None:
+            for point in obs_points_optimal:
+                plt.plot(point[0], point[1], marker="o", markersize=10, alpha=0.8, color='red')
         obj_center = np.array(obj_center)
-        plt.plot(obj_center[:,0], obj_center[:,1], marker='o', markersize=10, alpha=0.8, color='red')
+        plt.plot(obj_center[:,0], obj_center[:,1], marker='o', markersize=10, alpha=0.8, color='black')
         key_points = np.array(key_points)
-        plt.plot(key_points[:,0], key_points[:,1])
+        key_points_optimal = np.array(key_points_optimal)
+        plt.plot(key_points[:,0], key_points[:,1], color='blue')
+        plt.plot(key_points_optimal[:,0], key_points_optimal[:,1], color='red')
         plt_name = f'images/map{tag}.png'
         plt.savefig(plt_name)
         # plt.show(block=False)
@@ -549,35 +645,15 @@ class AutomatedMultiview():
 
     def run(self):
         scene = self.sim.semantic_scene
+        object_centers = self.get_midpoint_obj_conf()
         print("DJSD")
-
+        print(object_centers)
+        print(object_centers.shape)
         agent_state = habitat_sim.AgentState()
         self.agent.set_state(agent_state)
         scene = self.sim.semantic_scene
         objects = scene.objects
         map_count = 0
-
-        if True: # GROUND TRUTH FOR TESTING AND PLOTTING
-            object_centers = []
-            for obj in objects:
-                # obj = objects[obj_ind]
-                # obj_ind += 1
-                if obj == None or obj.category == None or obj.category.name() not in self.include_classes:
-                    continue
-                # st()
-                # if self.verbose:
-                print(f"Object name is: {obj.category.name()}")
-                # Calculate distance to object center
-                obj_center = obj.obb.to_aabb().center
-                #print(obj_center)
-                object_centers.append(obj_center)
-            object_centers = np.array(object_centers)
-        else:
-            object_centers = self.get_midpoint_obj_conf()
-
-        # print(object_centers)
-        print("NUMBER OF OBJECTS: ", object_centers.shape)
-        
         # for obj in objects:
         #     if obj == None or obj.category == None or obj.category.name() not in self.include_classes:
         #         continue
@@ -624,7 +700,7 @@ class AutomatedMultiview():
             valid_pitch = np.degrees(np.arctan2(dy,dxdz_norm))
 
             # binning yaw around object
-            nbins = 22
+            nbins = 18
             bins = np.linspace(-180, 180, nbins+1)
             bin_yaw = np.digitize(valid_yaw, bins)
 
@@ -660,6 +736,13 @@ class AutomatedMultiview():
             current_direction = 1 # move to "right" bins first
             current_bin_ind = int(np.random.randint(nbins)) #1
             # for b in range(nbins):
+
+            if True:
+                capture_output = False
+                first_capture = True
+            else:
+                capture_output = True
+                first_capture = True
                 
             #     # # get all angle indices in the current bin range
             #     # # st()
@@ -667,19 +750,10 @@ class AutomatedMultiview():
             #     # inds_bin_cur = list(inds_bin_cur[0])
             #     # if len(inds_bin_cur) == 0:
             #     #     continue
-            if True:
-                capture_output = False
-                first_capture = True
-                cap = 0
-            else:
-                capture_output = True
-                first_capture = True
-
-            aleady_changed = False
 
             #     for s in range(spawns_per_bin):
             if True:
-                num_iters = self.num_views + self.num_views 
+                num_iters = self.num_views + self.num_views // 2
 
                 for idx_s in range(num_iters):
             
@@ -706,31 +780,20 @@ class AutomatedMultiview():
                     if len(inds_bin_cur) == 0 and aleady_changed:
                         current_bin_ind = int(np.random.randint(nbins))
                         aleady_changed = False
-                        print(2)
-                        if True:
-                            if first_capture:
-                                capture_output = True
-                            else:
-                                capture_output = False
                         continue
                         # switch searching direction
                     elif len(inds_bin_cur) == 0:
                         aleady_changed = True
                         current_bin_ind = current_bin_ind_prev
                         current_direction = -current_direction
-                        print(1)
                         if True:
                             if first_capture:
                                 capture_output = True
+                                first_capture = False
                             else:
                                 capture_output = False
-                        # print(capture_output)
                         continue
                     aleady_changed = False
-                    print(capture_output)
-
-                    if first_capture and capture_output:
-                        first_capture = False
 
                     
                     rand_ind = np.random.randint(0, len(inds_bin_cur))
@@ -764,8 +827,8 @@ class AutomatedMultiview():
                     
                     ### Execute actions from path_finder #########
                     # agent_state = self.agent.get_state()
-                    # print("BEFORE", agent_state.position)
-                    # print("ROT", agent_state.rotation)
+                    print("BEFORE", agent_state.position)
+                    print("ROT", agent_state.rotation)
                     try:
                         actions_path = self.path_finder.find_path(pos_s)
                     except:
@@ -774,7 +837,17 @@ class AutomatedMultiview():
                     for action_path in actions_path:
                         if action_path is None:
                             continue
-                        self.sim.step(action_path)
+                        if action_path == "turn_left":
+                            act_noise = "noisy_left"
+                            # act_noise = "pyrobot_noisy_left"
+                        if action_path == "turn_right":
+                            act_noise = "noisy_right"
+                            # act_noise = "pyrobot_noisy_right"
+                        if action_path == "move_forward":
+                            act_noise = "noisy_forward"
+                            # act_noise = "pyrobot_noisy_forward"
+                            
+                        self.sim.step(act_noise)
                         if action_path=="move_forward":
                             agent_state_cur = self.agent.get_state()
                             if capture_output:
@@ -785,12 +858,10 @@ class AutomatedMultiview():
                             positions_traveled_all.append(agent_state_cur.position)
                     if capture_output:
                         obs_locations.append(agent_state_cur.position)
-                    
-                    # obs_locations.append(agent_state_cur.position)
                     agent_state = self.agent.get_state()
-                    # print("AFTER", agent_state.position)
-                    # print("ROT", agent_state.rotation)
-                    # print(self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount)
+                    print("AFTER", agent_state.position)
+                    print("ROT", agent_state.rotation)
+                    print(self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount)
 
                     # agent_state.position = pos_s
                     self.agent.set_state(agent_state)
@@ -800,8 +871,8 @@ class AutomatedMultiview():
                     self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
 
                     # agent_state = self.agent.get_state()
-                    # print("AFTER", agent_state.position)
-                    # print("ROT", agent_state.rotation)
+                    print("AFTER", agent_state.position)
+                    print("ROT", agent_state.rotation)
 
                     ##############################################
 
@@ -815,7 +886,7 @@ class AutomatedMultiview():
 
                     # YAW calculation - rotate to object
                     # agent_state = self.agent.get_state()
-                    agent_to_obj = np.squeeze(obj_center) - (agent_state.position + np.array([0, 1.5, 0]))
+                    agent_to_obj = np.squeeze(obj_center) - (pos_s + np.array([0, 1.5, 0]))
                     agent_local_forward = np.array([0, 0, -1.0]) # y, z, x
                     flat_to_obj = np.array([agent_to_obj[0], 0.0, agent_to_obj[2]])
                     flat_dist_to_obj = np.linalg.norm(flat_to_obj)
@@ -829,11 +900,11 @@ class AutomatedMultiview():
                     # agent_state = self.agent.get_state()
                     agent_state.rotation = quat_yaw
                     # self.agent.set_state(agent_state)
-                    # print("ROT", agent_state.rotation)
+                    print("ROT", agent_state.rotation)
                     
                     # change sensor state to default 
                     # need to move the sensors too
-                    # print(self.agent.state.sensor_states)
+                    print(self.agent.state.sensor_states)
                     for sensor in self.agent.state.sensor_states:
                         # st()
                         self.agent.state.sensor_states[sensor].rotation = agent_state.rotation
@@ -843,7 +914,7 @@ class AutomatedMultiview():
                     # Calculate Pitch from head to object
                     turn_pitch = np.degrees(math.atan2(agent_to_obj[1], flat_dist_to_obj))
                     num_turns = np.abs(np.floor(turn_pitch/self.rot_interval)).astype(int) # compute number of times to move head up or down by rot_interval
-                    # print("MOVING HEAD ", num_turns, " TIMES")
+                    print("MOVING HEAD ", num_turns, " TIMES")
                     movement = "look_up" if turn_pitch>0 else "look_down"
 
                     # # initiate agent
@@ -882,7 +953,7 @@ class AutomatedMultiview():
                     
                     # Assuming all sensors have same rotation and position
                     observations["rotations"] = self.agent.state.sensor_states['color_sensor'].rotation #agent_state.rotation
-                    observations["positions"] = self.agent.state.sensor_states['color_sensor'].position
+                    observations["positions"] = pos_s + np.array([0, 1.5, 0]) #self.agent.state.sensor_states['color_sensor'].position
 
                     if self.is_valid_datapoint(observations):
                         if self.verbose:
@@ -898,29 +969,163 @@ class AutomatedMultiview():
                         plt.savefig(f'images/test{s}_{b}.png')
 
                     # agent_state = self.agent.get_state()
-                    # print("AFTER", agent_state.position)
+                    print("AFTER", agent_state.position)
 
                     cnt +=1
 
-            if self.gen_maps and len(positions_traveled_all)>0:
+            if self.gen_maps:
+                cnt2 = 0
+                positions_traveled_all_optimal = []
+                obs_locations_optimal = []
+                for idx_s_n in range(len(valid_pts_selected)):
+                    pos_s = valid_pts_selected[idx_s_n]
+
+                    if cnt2==0:
+                        agent_state = habitat_sim.AgentState()
+                        agent_state.position = pos_s
+                        self.agent.set_state(agent_state)
+                    # pos_s = pos_s + np.array([0, 1.5, 0])
+                    # pos_s[1] = y_height_fixed # keep y height constant as much as possible
+                    # agent_state.position = pos_s
+
+                    # # initiate agent
+                    # self.agent.set_state(agent_state)
+                    # self.sim.step(action)
+                    
+                    ### Execute actions from path_finder #########
+                    # agent_state = self.agent.get_state()
+                    print("BEFORE", agent_state.position)
+                    print("ROT", agent_state.rotation)
+                    try:
+                        actions_path = self.path_finder.find_path(pos_s)
+                    except:
+                        print("ACTION PATH FAILED")
+                        continue
+                    for action_path in actions_path:
+                        if action_path is None:
+                            continue
+                        # if action_path == "turn_left":
+                        #     act_noise = "noisy_left"
+                        # if action_path == "turn_right":
+                        #     act_noise = "noisy_right"
+                        # if action_path == "move_forward":
+                        #     act_noise = "noisy_forward"
+                        self.sim.step(action_path)
+                        if action_path=="move_forward":
+                            agent_state_cur = self.agent.get_state()
+                            positions_traveled_all_optimal.append(agent_state_cur.position)
+                    if actions_path[0] == None:
+                        agent_state_cur = self.agent.get_state()
+                        positions_traveled_all_optimal.append(agent_state_cur.position)
+                    
+                    obs_locations_optimal.append(agent_state_cur.position)
+
+                    agent_state = self.agent.get_state()
+                    print("AFTER", agent_state.position)
+                    print("ROT", agent_state.rotation)
+                    print(self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount)
+
+                    # agent_state.position = pos_s
+                    self.agent.set_state(agent_state)
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                    self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
+
+                    # agent_state = self.agent.get_state()
+                    print("AFTER", agent_state.position)
+                    print("ROT", agent_state.rotation)
+
+                    ##############################################
+
+
+                    # agent_state = habitat_sim.AgentState()
+                    # agent_state.position = pos_s + np.array([0, 1.5, 0])
+
+                    # agent_state = habitat_sim.AgentState()
+                    # self.agent.set_state(agent_state)
+
+
+                    # YAW calculation - rotate to object
+                    # agent_state = self.agent.get_state()
+                    agent_to_obj = np.squeeze(obj_center) - (agent_state.position + np.array([0, 1.5, 0]))
+                    agent_local_forward = np.array([0, 0, -1.0]) # y, z, x
+                    flat_to_obj = np.array([agent_to_obj[0], 0.0, agent_to_obj[2]])
+                    flat_dist_to_obj = np.linalg.norm(flat_to_obj)
+                    flat_to_obj /= flat_dist_to_obj
+
+                    det = (flat_to_obj[0] * agent_local_forward[2]- agent_local_forward[0] * flat_to_obj[2])
+                    turn_angle = math.atan2(det, np.dot(agent_local_forward, flat_to_obj))
+                    quat_yaw = quat_from_angle_axis(turn_angle, np.array([0, 1.0, 0]))
+
+                    # Set agent yaw rotation to look at object
+                    # agent_state = self.agent.get_state()
+                    agent_state.rotation = quat_yaw
+                    # self.agent.set_state(agent_state)
+                    print("ROT", agent_state.rotation)
+                    
+                    # change sensor state to default 
+                    # need to move the sensors too
+                    print(self.agent.state.sensor_states)
+                    for sensor in self.agent.state.sensor_states:
+                        # st()
+                        self.agent.state.sensor_states[sensor].rotation = agent_state.rotation
+                        self.agent.state.sensor_states[sensor].position = agent_state.position + np.array([0, 1.5, 0]) # ADDED IN UP TOP
+                        # print("PRINT", self.agent.state.sensor_states[sensor].rotation)
+
+                    # Calculate Pitch from head to object
+                    turn_pitch = np.degrees(math.atan2(agent_to_obj[1], flat_dist_to_obj))
+                    num_turns = np.abs(np.floor(turn_pitch/self.rot_interval)).astype(int) # compute number of times to move head up or down by rot_interval
+                    print("MOVING HEAD ", num_turns, " TIMES")
+                    movement = "look_up" if turn_pitch>0 else "look_down"
+
+                    # # initiate agent
+                    # # self.agent.set_state(agent_state)
+                    # # agent_state = habitat_sim.AgentState()
+                    self.agent.set_state(agent_state)
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                    self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
+
+                    # # initiate agent
+                    # self.agent.set_state(agent_state)
+                    # self.sim.step(action)
+
+                    # Rotate "head" of agent up or down based on calculated pitch angle to object to center it in view
+                    if num_turns == 0:
+                        pass
+                    else: 
+                        for turn in range(num_turns):
+                            # st()
+                            self.sim.step(movement)
+                            if self.verbose:
+                                for sensor in self.agent.state.sensor_states:
+                                    print(self.agent.state.sensor_states[sensor].rotation)
+                    
+                    # # get observations after centiering
+                    val = self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = 0.
+                    observations = self.sim.step(action)
+                    self.sim.agents[0].agent_config.action_space["move_forward"].actuation.amount = val
+
+                    cnt2 += 1
+
+
                 # convert 3d points to 2d topdown coordinates
                 map_count += 1
                 height = 1
-                meters_per_pixel = 0.01
+                meters_per_pixel = 0.1
                 positions_traveled_all = np.array(positions_traveled_all)
                 obs_locations = np.array(obs_locations)
+                positions_traveled_all_optimal = np.array(positions_traveled_all_optimal)
+                obs_locations_optimal = np.array(obs_locations_optimal)
                 h_y = np.mean(valid_pts, axis=0)[1]
                 top_down_map = maps.get_topdown_map(
-                    self.sim.pathfinder, h_y, meters_per_pixel=meters_per_pixel, draw_border=False
+                    self.sim.pathfinder, h_y, meters_per_pixel=meters_per_pixel
                     )
-                # top_down_map = maps.get_topdown_map(
-                #     self.sim.pathfinder, h_y, map_resolution=1024, draw_border=False
-                #     )
-                    
-                top_down_map_filled = binary_fill_holes(top_down_map).astype(int)
-                tdm_diff = top_down_map_filled - top_down_map
-                top_down_map[tdm_diff==1] = 2
                 vis_points = positions_traveled_all #np.unique(positions_traveled_all, axis=0)
+                
                 xy_vis_points = self.convert_points_to_topdown(
                     self.sim.pathfinder, vis_points, meters_per_pixel
                 )
@@ -930,32 +1135,19 @@ class AutomatedMultiview():
                 obj_center_vis_points = self.convert_points_to_topdown(
                     self.sim.pathfinder, obj_center, meters_per_pixel
                 )
-                # objs_point_boxes = []
-                # for obj in objects:
-                #     if obj == None or obj.category == None or obj.category.name() in self.ignore_classes: #not in self.include_classes:
-                #         continue
-                #     bbox_size = obj.obb.sizes
-                #     bbox_center = obj.obb.center
-                #     xmin, xmax = bbox_center[0]-bbox_size[0]/2., bbox_center[0]+bbox_size[0]/2.
-                #     ymin, ymax = bbox_center[2]-bbox_size[2]/2., bbox_center[2]+bbox_size[2]/2.
-                #     x = np.arange(xmin, xmax, 0.1)
-                #     y = np.arange(ymin, ymax, 0.1)
-                #     xx, yy = np.meshgrid(x, y)
-                #     xx = xx.flatten()
-                #     yy = yy.flatten()
-                #     obj_box_locs = np.vstack((xx, np.ones(xx.shape[0])*h_y, yy)).T
-                #     xy_points_obj = self.convert_points_to_topdown(
-                #         self.sim.pathfinder, obj_box_locs, meters_per_pixel
-                #     )
-                #     objs_point_boxes.append(xy_points_obj)
-
-
+                vis_points_optimal = positions_traveled_all_optimal
+                xy_vis_points_optimal = self.convert_points_to_topdown(
+                    self.sim.pathfinder, vis_points_optimal, meters_per_pixel
+                )
+                xy_obs_points_optimal = self.convert_points_to_topdown(
+                    self.sim.pathfinder, obs_locations_optimal, meters_per_pixel
+                )
                 recolor_map = np.array(
                     [[255, 255, 255], [128, 128, 128], [0, 0, 0]], dtype=np.uint8
                 )
                 top_down_map = recolor_map[top_down_map]
                 tag = os.path.split(self.basepath)[-1] + '_' + str(map_count)
-                self.display_map(top_down_map, tag=tag, key_points=xy_vis_points, obs_points=xy_obs_points, obj_center=obj_center_vis_points, objs_point_boxes=None)
+                self.display_map(top_down_map, tag=tag, key_points=xy_vis_points, obs_points=xy_obs_points, obj_center=obj_center_vis_points, key_points_optimal=xy_vis_points_optimal, obs_points_optimal=xy_obs_points_optimal)
                         
             if self.save_this:
                 if len(episodes) >= self.num_views:
